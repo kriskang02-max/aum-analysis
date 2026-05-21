@@ -64,4 +64,20 @@ git push -u origin main
 
 브라우저: `http://localhost:8501` (같은 네트워크: `http://<PC-IP>:8501`)
 
-새 기준일 엑셀은 `data/`(또는 프로젝트 루트)에 넣고 **새로고침**(⋮ → Clear cache)하면 반영됩니다.
+## 엑셀 변경 → 사이트 자동 반영
+
+프로젝트 **루트**에 `공모_YYMMDD.xlsx` 등을 추가·수정한 뒤:
+
+| 파일 | 용도 |
+|------|------|
+| **`sync_deploy.bat`** | 1회 실행: 루트 엑셀 → `data/` 복사 → GitHub 푸시 (Streamlit Cloud 재배포) |
+| **`sync_deploy_watch.bat`** | 5분마다 변경 여부 확인 후 자동 푸시 (창을 켜 둠) |
+
+로그: `logs/sync_deploy.log`
+
+**최초 1회:** GitHub 로그인(푸시 권한)이 되어 있어야 합니다.  
+저장소: `https://github.com/kriskang02-max/aum-analysis`
+
+Windows 작업 스케줄러로 `sync_deploy.bat`을 매일/매시간 실행해도 됩니다.
+
+새 기준일 엑셀은 **루트 또는 `data/`**에 두면 됩니다. 배치가 루트 → `data/`를 맞춘 뒤 푸시합니다.

@@ -1,4 +1,4 @@
-# 엑셀 변경분을 data/에 반영 후 GitHub(aum-analysis)에 푸시 → Streamlit Cloud 자동 재배포
+# 엑셀 변경분을 data/에 반영 후 GitHub(aum-analysis)에 푸시
 param(
     [switch]$Watch,
     [int]$WatchIntervalSec = 300
@@ -8,16 +8,12 @@ $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 Set-Location $Root
 
-# 콘솔 한글 출력 (cmd에서 실행 시)
 try {
     chcp 65001 | Out-Null
-    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 }
-catch {
-    # 일부 환경에서는 무시
-}
+catch { }
 
 $LogDir = Join-Path $Root "logs"
 if (-not (Test-Path $LogDir)) {
@@ -25,12 +21,40 @@ if (-not (Test-Path $LogDir)) {
 }
 $LogFile = Join-Path $LogDir "sync_deploy.log"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$script:SessionLog = New-Object System.Collections.Generic.List[string]
 
 function Write-Log {
     param([string]$Message)
     $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
     [System.IO.File]::AppendAllText($LogFile, $line + [Environment]::NewLine, $Utf8NoBom)
-    Write-Host $line
+    $script:SessionLog.Add($line)
+}
+
+function Show-SessionLog {
+    Write-Host ""
+    Write-Host "---------- 실행 결과 ----------"
+    foreach ($line in $script:SessionLog) {
+        Write-Host $line
+    }
+    Write-Host "------------------------------"
+}
+
+function Invoke-Git {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $output = & git @GitArgs 2>&1
+    $ErrorActionPreference = $prev
+    if ($null -ne $output) {
+        foreach ($o in @($output)) {
+            if ("$o".Trim()) {
+                Write-Host $o
+            }
+        }
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($GitArgs -join ' ') 실패 (종료 코드 $LASTEXITCODE)"
+    }
 }
 
 function Sync-ExcelToData {
@@ -65,13 +89,13 @@ function Sync-ExcelToData {
 }
 
 function Get-GitChangedFiles {
-    $lines = git status --porcelain 2>$null
-    if (-not $lines) {
+    $lines = @(git status --porcelain 2>$null)
+    if ($lines.Count -eq 0) {
         return @()
     }
     $files = [System.Collections.Generic.List[string]]::new()
     foreach ($line in $lines) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.Length -lt 4) {
             continue
         }
         $path = $line.Substring(3).Trim()
@@ -85,12 +109,12 @@ function Get-GitChangedFiles {
 
 function Publish-GitHub {
     if (-not (Test-Path (Join-Path $Root ".git"))) {
-        throw "Git 저장소가 없습니다. 프로젝트 폴더에서 git init 후 remote를 설정해 주세요."
+        throw "Git 저장소가 없습니다."
     }
 
     $remoteUrl = git remote get-url origin 2>$null
     if (-not $remoteUrl) {
-        throw "git remote 'origin'이 없습니다. 예: git remote add origin https://github.com/kriskang02-max/aum-analysis.git"
+        throw "git remote 'origin'이 없습니다."
     }
 
     $branch = (git branch --show-current 2>$null)
@@ -101,7 +125,7 @@ function Publish-GitHub {
         $branch = $branch.Trim()
     }
 
-    git add -A 2>&1 | Out-Host
+    Invoke-Git add -A
     $changed = Get-GitChangedFiles
     if ($changed.Count -eq 0) {
         return @{ Pushed = $false; Files = @() }
@@ -109,14 +133,15 @@ function Publish-GitHub {
 
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm"
     $msg = "chore: sync excel data and deploy ($stamp)"
-    git commit -m $msg 2>&1 | Out-Host
-    git push origin $branch 2>&1 | Out-Host
+    Invoke-Git commit -m $msg
+    Invoke-Git push origin $branch
     Write-Log "GitHub 푸시 완료: $remoteUrl (브랜치 $branch)"
     Write-Log "Streamlit Cloud 연결 시 1~3분 내 사이트에 반영됩니다."
     return @{ Pushed = $true; Files = $changed }
 }
 
 function Invoke-SyncDeployOnce {
+    $script:SessionLog.Clear()
     Write-Log "=== 동기화·배포 시작 ==="
 
     $copied = Sync-ExcelToData
@@ -148,24 +173,34 @@ function Invoke-SyncDeployOnce {
         Write-Log "요약: 배포 완료."
     }
     else {
-        Write-Log "요약: 엑셀만 반영됐거나, Git에 반영할 변경이 없습니다."
+        Write-Log "요약: Git에 반영할 변경이 없습니다."
     }
 
     Write-Log "=== 완료 ==="
+    Show-SessionLog
 }
 
 if ($Watch) {
-    Write-Log "감시 모드 ($WatchIntervalSec 초 간격). 종료: Ctrl+C"
+    Write-Log "감시 모드 ($WatchIntervalSec 초). 종료: Ctrl+C"
+    Show-SessionLog
     while ($true) {
         try {
             Invoke-SyncDeployOnce
         }
         catch {
             Write-Log ("오류: {0}" -f $_.Exception.Message)
+            Show-SessionLog
         }
         Start-Sleep -Seconds $WatchIntervalSec
     }
 }
 else {
-    Invoke-SyncDeployOnce
+    try {
+        Invoke-SyncDeployOnce
+    }
+    catch {
+        Write-Log ("오류: {0}" -f $_.Exception.Message)
+        Show-SessionLog
+        exit 1
+    }
 }

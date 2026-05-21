@@ -1,0 +1,16 @@
+﻿$script:AumDeployMsg = @{
+    Start       = "=== 동기화·배포 시작 ==="
+    Done        = "=== 완료 ==="
+    NoExcel     = "새로 반영할 엑셀 없음 (프로젝트 루트 -> data/ 변경 없음)"
+    ExcelNew    = "새로 data/에 반영한 엑셀 ({0}개):"
+    NoGit       = "GitHub에 올릴 새 파일·변경 없음 (푸시 생략)"
+    GitUpload   = "GitHub에 업로드한 파일 ({0}개):"
+    SummaryNone = "요약: 업로드할 내용이 없습니다."
+    SummaryDone = "요약: 배포 완료."
+    SummaryGit  = "요약: Git에 반영할 변경이 없습니다."
+    PushDone    = "GitHub 푸시 완료: {0} (브랜치 {1})"
+    Streamlit   = "Streamlit Cloud 연결 시 1~3분 내 사이트에 반영됩니다."
+    ResultHdr   = "---------- 실행 결과 ----------"
+    ResultFoot  = "------------------------------"
+    LogPath     = "(전체 기록: logs\sync_deploy.log)"
+}

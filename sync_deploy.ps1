@@ -1,4 +1,4 @@
-# 엑셀 변경분을 data/에 반영 후 GitHub(aum-analysis)에 푸시
+# Excel sync -> data/ -> git push (Streamlit Cloud)
 param(
     [switch]$Watch,
     [int]$WatchIntervalSec = 300
@@ -7,6 +7,13 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 Set-Location $Root
+
+$KoFile = Join-Path $Root "sync_deploy.ko.ps1"
+if (-not (Test-Path $KoFile)) {
+    throw "Missing sync_deploy.ko.ps1"
+}
+. $KoFile
+$M = $script:AumDeployMsg
 
 try {
     chcp 65001 | Out-Null
@@ -33,14 +40,14 @@ function Write-Log {
 function Show-SessionLog {
     $n = [Math]::Max($script:SessionLog.Count, 1)
     Write-Host ""
-    Write-Host "---------- 실행 결과 ----------"
+    Write-Host $M.ResultHdr
     if (Test-Path $LogFile) {
         Get-Content -LiteralPath $LogFile -Encoding UTF8 -Tail ($n + 1) | ForEach-Object {
             [Console]::Out.WriteLine($_)
         }
     }
-    Write-Host "------------------------------"
-    Write-Host "(전체 기록: logs\sync_deploy.log)"
+    Write-Host $M.ResultFoot
+    Write-Host $M.LogPath
 }
 
 function Invoke-Git {
@@ -57,7 +64,7 @@ function Invoke-Git {
         }
     }
     if ($LASTEXITCODE -ne 0) {
-        throw "git $($GitArgs -join ' ') 실패 (종료 코드 $LASTEXITCODE)"
+        throw "git failed: $($GitArgs -join ' ') (exit $LASTEXITCODE)"
     }
 }
 
@@ -113,12 +120,12 @@ function Get-GitChangedFiles {
 
 function Publish-GitHub {
     if (-not (Test-Path (Join-Path $Root ".git"))) {
-        throw "Git 저장소가 없습니다."
+        throw "Not a git repository."
     }
 
     $remoteUrl = git remote get-url origin 2>$null
     if (-not $remoteUrl) {
-        throw "git remote 'origin'이 없습니다."
+        throw "git remote 'origin' not configured."
     }
 
     $branch = (git branch --show-current 2>$null)
@@ -139,60 +146,60 @@ function Publish-GitHub {
     $msg = "chore: sync excel data and deploy ($stamp)"
     Invoke-Git commit -m $msg
     Invoke-Git push origin $branch
-    Write-Log "GitHub 푸시 완료: $remoteUrl (브랜치 $branch)"
-    Write-Log "Streamlit Cloud 연결 시 1~3분 내 사이트에 반영됩니다."
+    Write-Log ($M.PushDone -f $remoteUrl, $branch)
+    Write-Log $M.Streamlit
     return @{ Pushed = $true; Files = $changed }
 }
 
 function Invoke-SyncDeployOnce {
     $script:SessionLog.Clear()
-    Write-Log "=== 동기화·배포 시작 ==="
+    Write-Log $M.Start
 
     $copied = Sync-ExcelToData
     if ($copied.Count -gt 0) {
-        Write-Log "새로 data/에 반영한 엑셀 ($($copied.Count)개):"
+        Write-Log ($M.ExcelNew -f $copied.Count)
         foreach ($name in $copied) {
-            Write-Log "  · $name"
+            Write-Log "  - $name"
         }
     }
     else {
-        Write-Log "새로 반영할 엑셀 없음 (프로젝트 루트 → data/ 변경 없음)"
+        Write-Log $M.NoExcel
     }
 
     $result = Publish-GitHub
     if ($result.Pushed) {
-        Write-Log "GitHub에 업로드한 파일 ($($result.Files.Count)개):"
+        Write-Log ($M.GitUpload -f $result.Files.Count)
         foreach ($path in $result.Files) {
-            Write-Log "  · $path"
+            Write-Log "  - $path"
         }
     }
     else {
-        Write-Log "GitHub에 올릴 새 파일·변경 없음 (푸시 생략)"
+        Write-Log $M.NoGit
     }
 
     if (-not $result.Pushed -and $copied.Count -eq 0) {
-        Write-Log "요약: 업로드할 내용이 없습니다."
+        Write-Log $M.SummaryNone
     }
     elseif ($result.Pushed) {
-        Write-Log "요약: 배포 완료."
+        Write-Log $M.SummaryDone
     }
     else {
-        Write-Log "요약: Git에 반영할 변경이 없습니다."
+        Write-Log $M.SummaryGit
     }
 
-    Write-Log "=== 완료 ==="
+    Write-Log $M.Done
     Show-SessionLog
 }
 
 if ($Watch) {
-    Write-Log "감시 모드 ($WatchIntervalSec 초). 종료: Ctrl+C"
+    Write-Log "Watch mode ($WatchIntervalSec sec). Ctrl+C to stop."
     Show-SessionLog
     while ($true) {
         try {
             Invoke-SyncDeployOnce
         }
         catch {
-            Write-Log ("오류: {0}" -f $_.Exception.Message)
+            Write-Log ("Error: {0}" -f $_.Exception.Message)
             Show-SessionLog
         }
         Start-Sleep -Seconds $WatchIntervalSec
@@ -203,7 +210,7 @@ else {
         Invoke-SyncDeployOnce
     }
     catch {
-        Write-Log ("오류: {0}" -f $_.Exception.Message)
+        Write-Log ("Error: {0}" -f $_.Exception.Message)
         Show-SessionLog
         exit 1
     }

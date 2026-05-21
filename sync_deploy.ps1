@@ -8,16 +8,28 @@ $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 Set-Location $Root
 
+# 콘솔 한글 출력 (cmd에서 실행 시)
+try {
+    chcp 65001 | Out-Null
+    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+}
+catch {
+    # 일부 환경에서는 무시
+}
+
 $LogDir = Join-Path $Root "logs"
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir | Out-Null
 }
 $LogFile = Join-Path $LogDir "sync_deploy.log"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
 function Write-Log {
     param([string]$Message)
     $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8
+    [System.IO.File]::AppendAllText($LogFile, $line + [Environment]::NewLine, $Utf8NoBom)
     Write-Host $line
 }
 
@@ -27,7 +39,7 @@ function Sync-ExcelToData {
         New-Item -ItemType Directory -Path $dataDir | Out-Null
     }
 
-    $copied = @()
+    $copied = [System.Collections.Generic.List[string]]::new()
     Get-ChildItem -Path $Root -Filter "*.xlsx" -File | ForEach-Object {
         $dest = Join-Path $dataDir $_.Name
         $needsCopy = $false
@@ -46,10 +58,29 @@ function Sync-ExcelToData {
         }
         if ($needsCopy) {
             Copy-Item $_.FullName $dest -Force
-            $copied += $_.Name
+            $copied.Add($_.Name)
         }
     }
     return $copied
+}
+
+function Get-GitChangedFiles {
+    $lines = git status --porcelain 2>$null
+    if (-not $lines) {
+        return @()
+    }
+    $files = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $lines) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        $path = $line.Substring(3).Trim()
+        if ($path.StartsWith('"') -and $path.EndsWith('"')) {
+            $path = $path.Substring(1, $path.Length - 2)
+        }
+        $files.Add($path)
+    }
+    return $files
 }
 
 function Publish-GitHub {
@@ -62,46 +93,69 @@ function Publish-GitHub {
         throw "git remote 'origin'이 없습니다. 예: git remote add origin https://github.com/kriskang02-max/aum-analysis.git"
     }
 
-    $branch = (git branch --show-current).Trim()
-    if (-not $branch) {
+    $branch = (git branch --show-current 2>$null)
+    if ([string]::IsNullOrWhiteSpace($branch)) {
         $branch = "main"
     }
+    else {
+        $branch = $branch.Trim()
+    }
 
-    git add -A
-    $status = git status --porcelain
-    if ([string]::IsNullOrWhiteSpace($status)) {
-        Write-Log "Git 변경 없음 — 푸시 생략"
-        return $false
+    git add -A 2>&1 | Out-Host
+    $changed = Get-GitChangedFiles
+    if ($changed.Count -eq 0) {
+        return @{ Pushed = $false; Files = @() }
     }
 
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm"
     $msg = "chore: sync excel data and deploy ($stamp)"
-    git commit -m $msg | Out-Host
-    git push origin $branch | Out-Host
-    Write-Log "GitHub 푸시 완료 ($remoteUrl → $branch)"
-    Write-Log "Streamlit Cloud가 연결되어 있으면 1~3분 내 사이트에 반영됩니다."
-    return $true
+    git commit -m $msg 2>&1 | Out-Host
+    git push origin $branch 2>&1 | Out-Host
+    Write-Log "GitHub 푸시 완료: $remoteUrl (브랜치 $branch)"
+    Write-Log "Streamlit Cloud 연결 시 1~3분 내 사이트에 반영됩니다."
+    return @{ Pushed = $true; Files = $changed }
 }
 
 function Invoke-SyncDeployOnce {
     Write-Log "=== 동기화·배포 시작 ==="
+
     $copied = Sync-ExcelToData
     if ($copied.Count -gt 0) {
-        Write-Log ("data/ 복사: {0}" -f ($copied -join ", "))
+        Write-Log "새로 data/에 반영한 엑셀 ($($copied.Count)개):"
+        foreach ($name in $copied) {
+            Write-Log "  · $name"
+        }
     }
     else {
-        Write-Log "루트 엑셀 → data/ 복사할 변경 없음"
+        Write-Log "새로 반영할 엑셀 없음 (프로젝트 루트 → data/ 변경 없음)"
     }
 
-    $pushed = Publish-GitHub
-    if (-not $pushed -and $copied.Count -eq 0) {
-        Write-Log "반영할 변경이 없습니다."
+    $result = Publish-GitHub
+    if ($result.Pushed) {
+        Write-Log "GitHub에 업로드한 파일 ($($result.Files.Count)개):"
+        foreach ($path in $result.Files) {
+            Write-Log "  · $path"
+        }
     }
+    else {
+        Write-Log "GitHub에 올릴 새 파일·변경 없음 (푸시 생략)"
+    }
+
+    if (-not $result.Pushed -and $copied.Count -eq 0) {
+        Write-Log "요약: 업로드할 내용이 없습니다."
+    }
+    elseif ($result.Pushed) {
+        Write-Log "요약: 배포 완료."
+    }
+    else {
+        Write-Log "요약: 엑셀만 반영됐거나, Git에 반영할 변경이 없습니다."
+    }
+
     Write-Log "=== 완료 ==="
 }
 
 if ($Watch) {
-    Write-Log "감시 모드 시작 (루트/*.xlsx, data/*.xlsx, $WatchIntervalSec 초 간격). 종료: Ctrl+C"
+    Write-Log "감시 모드 ($WatchIntervalSec 초 간격). 종료: Ctrl+C"
     while ($true) {
         try {
             Invoke-SyncDeployOnce

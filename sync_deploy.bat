@@ -1,9 +1,10 @@
 @echo off
+setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 
 echo [AUM] 엑셀 동기화 후 GitHub/Streamlit 배포...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0sync_deploy.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8; & '%~dp0sync_deploy.ps1' }"
 set EXITCODE=%ERRORLEVEL%
 
 if %EXITCODE% neq 0 (
@@ -14,6 +15,6 @@ if %EXITCODE% neq 0 (
 )
 
 echo.
-echo 완료. logs\sync_deploy.log 에 기록되었습니다.
-timeout /t 3 >nul
+echo 완료. 자세한 내용은 logs\sync_deploy.log 에도 기록됩니다.
+timeout /t 4 >nul
 exit /b 0

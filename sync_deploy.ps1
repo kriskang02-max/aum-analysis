@@ -31,12 +31,16 @@ function Write-Log {
 }
 
 function Show-SessionLog {
+    $n = [Math]::Max($script:SessionLog.Count, 1)
     Write-Host ""
     Write-Host "---------- 실행 결과 ----------"
-    foreach ($line in $script:SessionLog) {
-        Write-Host $line
+    if (Test-Path $LogFile) {
+        Get-Content -LiteralPath $LogFile -Encoding UTF8 -Tail ($n + 1) | ForEach-Object {
+            [Console]::Out.WriteLine($_)
+        }
     }
     Write-Host "------------------------------"
+    Write-Host "(전체 기록: logs\sync_deploy.log)"
 }
 
 function Invoke-Git {

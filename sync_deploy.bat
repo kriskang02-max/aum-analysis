@@ -16,5 +16,5 @@ if %EXITCODE% neq 0 (
 
 echo.
 echo Done. See logs\sync_deploy.log
-timeout /t 4 >nul
+ping -n 4 127.0.0.1 >nul
 exit /b 0

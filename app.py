@@ -23,6 +23,14 @@ from src.data_loader import (
     load_all_aum,
 )
 from src.ceo_summary import build_company_ceo_summary, build_compare_ceo_summary
+from src.daily_compare import (
+    build_daily_company_metrics,
+    build_daily_type_metrics,
+    daily_pair_dates,
+    daily_summary_counts,
+    format_daily_table,
+    sorted_dates,
+)
 from src.formatting import (
     apply_jo_eok_yaxis,
     fmt_jo_eok,
@@ -103,11 +111,11 @@ def inject_compact_layout() -> None:
             margin-bottom: 0.25rem;
             padding: 0.5rem 0.75rem;
         }
-        /* Deploy 버튼 왼쪽 — Streamlit tertiary(헤더) 스타일 */
+        /* Streamlit 헤더(Deploy·⋮) 왼쪽 — 겹침 방지 */
         [class*="st-key-toolbar_refresh"] {
             position: fixed !important;
             top: 0.875rem !important;
-            right: 6.85rem !important;
+            right: 11.75rem !important;
             z-index: 999999 !important;
             width: auto !important;
             height: 0 !important;
@@ -119,18 +127,20 @@ def inject_compact_layout() -> None:
         [class*="st-key-toolbar_refresh"] > div {
             pointer-events: auto !important;
         }
-        [class*="st-key-toolbar_refresh"] button {
+        [class*="st-key-toolbar_refresh"] button,
+        [class*="st-key-toolbar_refresh"] [data-testid="stBaseButton-tertiary"] {
             background: rgba(255, 255, 255, 0.08) !important;
             border: 1px solid rgba(250, 250, 250, 0.2) !important;
             color: rgb(250, 250, 250) !important;
-            font-size: 14px !important;
+            font-size: 12px !important;
             font-weight: 400 !important;
-            padding: 0.25rem 0.75rem !important;
-            min-height: 2.25rem !important;
+            padding: 0.18rem 0.6rem !important;
+            min-height: 1.85rem !important;
             border-radius: 0.5rem !important;
             box-shadow: none !important;
         }
-        [class*="st-key-toolbar_refresh"] button:hover {
+        [class*="st-key-toolbar_refresh"] button:hover,
+        [class*="st-key-toolbar_refresh"] [data-testid="stBaseButton-tertiary"]:hover {
             border-color: rgba(250, 250, 250, 0.35) !important;
             color: rgb(255, 255, 255) !important;
             background: rgba(255, 255, 255, 0.12) !important;
@@ -423,6 +433,30 @@ def render_detail_table(display: pd.DataFrame) -> None:
     html = tbl.to_html(index=False, classes="aum-detail-table", border=0)
     st.markdown(
         f'<div class="aum-detail-scroll">{html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def inject_toolbar_refresh_font() -> None:
+    """Streamlit emotion 스타일보다 뒤에 로드 — 버튼 라벨 12px 고정."""
+    st.markdown(
+        """
+        <style>
+        html body [class*="st-key-toolbar_refresh"] button,
+        html body [class*="st-key-toolbar_refresh"] button *,
+        html body [class*="st-key-toolbar_refresh"] [data-testid="stBaseButton-tertiary"],
+        html body [class*="st-key-toolbar_refresh"] [data-testid="stBaseButton-tertiary"] * {
+            font-size: 12px !important;
+            line-height: 1.25 !important;
+        }
+        html body [class*="st-key-toolbar_refresh"] button p,
+        html body [class*="st-key-toolbar_refresh"] [data-testid="stBaseButton-tertiary"] p {
+            font-size: 12px !important;
+            line-height: 1.25 !important;
+            margin: 0 !important;
+        }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -1069,6 +1103,159 @@ def _signed_cell_style(val: object) -> str:
     return base
 
 
+def build_daily_movers_chart(
+    metrics: pd.DataFrame,
+    *,
+    title: str,
+    top_n: int = 18,
+    only_changed: bool = True,
+) -> go.Figure:
+    """일별 증감 절대값 상위 운용사 (가로 막대)."""
+    plot = metrics[~metrics["변동없음"]].copy() if only_changed else metrics.copy()
+    if plot.empty:
+        return go.Figure()
+
+    plot = plot.nlargest(top_n, "절대증감").sort_values("증감", ascending=True)
+    plot["라벨"] = plot["증감"].map(lambda v: fmt_jo_eok(v, signed=True))
+    companies = plot["운용사"].tolist()
+    colors = [
+        _COLOR_UP if v > 0 else _COLOR_DOWN if v < 0 else TOP20_OTHER_FILL
+        for v in plot["증감"]
+    ]
+    line_widths = [2.5 if c == DEFAULT_COMPANY else 0 for c in companies]
+
+    fig = go.Figure(
+        go.Bar(
+            x=plot["증감"],
+            y=plot["운용사"],
+            orientation="h",
+            text=plot["라벨"],
+            textposition="outside",
+            marker=dict(
+                color=colors,
+                line=dict(color=TOP20_HIGHLIGHT_FILL, width=line_widths),
+            ),
+            hovertemplate="%{y}<br>일별 증감: %{text}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        height=_top20_bar_height(len(plot)),
+        title=title,
+        showlegend=False,
+        margin=dict(l=120, r=40, t=48, b=32),
+        yaxis=dict(categoryorder="array", categoryarray=companies),
+    )
+    if DEFAULT_COMPANY in companies:
+        _add_top20_highlight_band(fig, present_categories=companies)
+    fig.update_traces(cliponaxis=False)
+    _apply_jo_eok_xaxis(fig, plot["증감"].astype(float).tolist())
+    return fig
+
+
+def build_daily_type_delta_chart(
+    type_metrics: pd.DataFrame,
+    prev_date: pd.Timestamp,
+    latest_date: pd.Timestamp,
+) -> go.Figure:
+    if type_metrics.empty:
+        return go.Figure()
+    plot = type_metrics.copy()
+    plot["라벨"] = plot["증감"].map(lambda v: fmt_jo_eok(v, signed=True))
+    fig = px.bar(
+        plot,
+        x="유형명",
+        y="증감",
+        color="증감",
+        color_continuous_scale=["#4dabf7", "#f0f0f0", "#ff6b6b"],
+        color_continuous_midpoint=0,
+        text="라벨",
+        labels={"증감": "일별 증감", "유형명": "유형"},
+    )
+    fig.update_layout(
+        height=340,
+        title=f"유형별 일별 증감 ({_yy_mm_dd(prev_date)}→{_yy_mm_dd(latest_date)})",
+        showlegend=False,
+    )
+    fig.update_traces(textposition="outside", cliponaxis=False, width=0.45)
+    apply_jo_eok_yaxis(fig, plot["증감"].astype(float).tolist())
+    return fig
+
+
+def _render_daily_up_down_charts(
+    metrics: pd.DataFrame,
+    *,
+    top_n: int,
+    key_prefix: str,
+    up_chart_title: str,
+    down_chart_title: str,
+    up_label: str = "증가 상위",
+    down_label: str = "감소 상위",
+) -> None:
+    """일별 증가/감소 상위 막대 차트 (2열)."""
+    changed = metrics[~metrics["변동없음"]]
+    col_up, col_down = st.columns(2)
+    nonce = st.session_state.chart_nonce
+    with col_up:
+        st.caption(up_label)
+        up_only = changed[changed["증감"] > 0].nlargest(top_n, "증감")
+        if up_only.empty:
+            st.info("증가한 운용사가 없습니다.")
+        else:
+            st.plotly_chart(
+                build_daily_movers_chart(
+                    up_only,
+                    title=up_chart_title,
+                    top_n=len(up_only),
+                    only_changed=False,
+                ),
+                use_container_width=True,
+                key=f"{key_prefix}_up_{nonce}",
+            )
+    with col_down:
+        st.caption(down_label)
+        down_only = changed[changed["증감"] < 0].nsmallest(top_n, "증감")
+        if down_only.empty:
+            st.info("감소한 운용사가 없습니다.")
+        else:
+            st.plotly_chart(
+                build_daily_movers_chart(
+                    down_only,
+                    title=down_chart_title,
+                    top_n=len(down_only),
+                    only_changed=False,
+                ),
+                use_container_width=True,
+                key=f"{key_prefix}_down_{nonce}",
+            )
+
+
+def style_daily_table(table: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """변동 없음 행 흐리게, 신한자산운용 강조."""
+    skip_signed = {"순위", "운용사", "변동"}
+    value_cols = [c for c in table.columns if c not in skip_signed]
+
+    def _row_style(row: pd.Series) -> list[str]:
+        base = "text-align: center"
+        if row.get("운용사") == DEFAULT_COMPANY:
+            return [
+                f"{base}; background-color: rgba(250, 176, 5, 0.14); font-weight: 600"
+            ] * len(row)
+        if row.get("변동") == "없음":
+            return [f"{base}; color: #94a3b8; font-style: italic"] * len(row)
+        return [base] * len(row)
+
+    styler = table.style.set_table_styles(
+        [
+            {"selector": "th", "props": [("text-align", "center")]},
+            {"selector": "td", "props": [("text-align", "center")]},
+        ]
+    )
+    styler = styler.apply(_row_style, axis=1)
+    for col in value_cols:
+        styler = styler.map(_signed_cell_style, subset=[col])
+    return styler.hide(axis="index")
+
+
 def style_company_table(table: pd.DataFrame) -> pd.io.formats.style.Styler:
     """가운데 정렬 + +/- 값 부호별 색상(증감·차이·운용사 증감 행 등)."""
     skip_signed = {"기준일", "유형"}
@@ -1482,10 +1669,11 @@ def main():
 
     st.markdown("---")
 
-    tab_summary, tab_top20, tab_company, tab_compare, tab_table = st.tabs(
+    tab_summary, tab_top20, tab_daily, tab_company, tab_compare, tab_table = st.tabs(
         [
             "전체 수탁고",
             "TOP20 비교",
+            "Daily 비교",
             "운용사별 수탁고",
             "운용사 비교",
             "상세 데이터",
@@ -1623,6 +1811,112 @@ def main():
             rank_table = format_top20_table(metrics, base_date, compare_date)
             with st.container(key="top20_table_scope"):
                 render_top20_rank_table(rank_table)
+
+    # --- Daily 비교 ---
+    with tab_daily:
+        pair = daily_pair_dates(agg)
+        if pair is None:
+            dates = sorted_dates(agg)
+            st.warning(
+                "일별 비교를 위해 서로 다른 기준일 데이터가 2개 이상 필요합니다. "
+                f"(현재 {len(dates)}개 일자)"
+            )
+        else:
+            prev_date, latest_date = pair
+            daily_metrics = build_daily_company_metrics(agg, prev_date, latest_date)
+            type_daily = build_daily_type_metrics(agg, prev_date, latest_date)
+            counts = daily_summary_counts(daily_metrics)
+
+            total_prev = daily_metrics["직전_수탁고"].sum()
+            total_latest = daily_metrics["최신_수탁고"].sum()
+            total_delta = total_latest - total_prev
+            total_rate = (total_delta / total_prev * 100) if total_prev else 0
+
+            st.caption(
+                f"**최신일 {_yy_mm_dd(latest_date)}** vs **직전일 {_yy_mm_dd(prev_date)}** "
+                "(데이터가 있는 연속 기준일) · 상단 유형·자산 필터 적용 · "
+                "정렬은 **변동폭(절대값)** 기준"
+            )
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric(f"{_yy_mm_dd(latest_date)} 합계", fmt_jo_eok(total_latest))
+            k2.metric("일별 증감", fmt_jo_eok(total_delta, signed=True))
+            k3.metric("증감률", f"{total_rate:+.2f}%" if total_prev else "-")
+            k4.metric("증가 / 감소", f"{counts['up']} / {counts['down']}")
+            k5.metric("변동 없음", f"{counts['flat']}개사")
+
+            st.plotly_chart(
+                build_daily_type_delta_chart(type_daily, prev_date, latest_date),
+                use_container_width=True,
+                key=f"daily_type_{st.session_state.chart_nonce}_{_norm_date(latest_date)}",
+            )
+
+            changed = daily_metrics[~daily_metrics["변동없음"]]
+
+            st.subheader("전체 · 증가/감소 상위")
+            _render_daily_up_down_charts(
+                daily_metrics,
+                top_n=12,
+                key_prefix="daily_all",
+                up_chart_title="증가 TOP (일별·전체)",
+                down_chart_title="감소 TOP (일별·전체)",
+            )
+
+            st.subheader("유형별 · 증가/감소 상위")
+            for fund_type in ("공모", "사모", "일임"):
+                type_agg = agg[agg["유형"] == fund_type]
+                if type_agg.empty:
+                    continue
+                type_label = TYPE_LABELS[fund_type]
+                type_metrics = build_daily_company_metrics(
+                    type_agg, prev_date, latest_date
+                )
+                type_counts = daily_summary_counts(type_metrics)
+                st.markdown(
+                    f"**{type_label}** · 증가 {type_counts['up']} / "
+                    f"감소 {type_counts['down']} / 무변동 {type_counts['flat']}"
+                )
+                _render_daily_up_down_charts(
+                    type_metrics,
+                    top_n=10,
+                    key_prefix=f"daily_{fund_type}",
+                    up_chart_title=f"증가 TOP · {type_label}",
+                    down_chart_title=f"감소 TOP · {type_label}",
+                    up_label=f"{type_label} 증가 상위",
+                    down_label=f"{type_label} 감소 상위",
+                )
+
+            st.subheader("변동폭 상위 (전체)")
+            st.plotly_chart(
+                build_daily_movers_chart(
+                    daily_metrics,
+                    title=f"일별 변동폭 TOP · {_yy_mm_dd(prev_date)}→{_yy_mm_dd(latest_date)}",
+                    top_n=20,
+                    only_changed=True,
+                ),
+                use_container_width=True,
+                key=f"daily_abs_{st.session_state.chart_nonce}",
+            )
+
+            show_flat = st.checkbox(
+                "변동 없는 운용사 표에 포함",
+                value=True,
+                key="daily_show_flat",
+            )
+            table_src = daily_metrics if show_flat else changed
+            st.subheader("운용사별 일별 비교")
+            st.caption(
+                f"**{DEFAULT_COMPANY}** 행 강조 · 변동 없음은 회색 이탤릭"
+            )
+            daily_table = format_daily_table(table_src, prev_date, latest_date)
+            table_height = 48 + len(daily_table) * 34
+            st.dataframe(
+                style_daily_table(daily_table),
+                use_container_width=True,
+                hide_index=True,
+                height=min(table_height, 900),
+                key=f"daily_table_{_norm_date(prev_date)}_{_norm_date(latest_date)}",
+            )
 
     # --- 운용사별 수탁고 ---
     with tab_company:
@@ -1781,6 +2075,8 @@ def main():
                     use_container_width=True,
                 )
             render_detail_table(display)
+
+    inject_toolbar_refresh_font()
 
 
 if __name__ == "__main__":

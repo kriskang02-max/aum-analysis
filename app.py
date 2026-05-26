@@ -23,6 +23,13 @@ from src.data_loader import (
     load_all_aum,
 )
 from src.ceo_summary import build_company_ceo_summary, build_compare_ceo_summary
+from src.report_tables import (
+    build_weekly_aum_report,
+    default_base_date as report_default_base_date,
+    format_weekly_aum_report,
+    sorted_dates as report_sorted_dates,
+    to_excel_copy_text,
+)
 from src.daily_compare import (
     build_daily_company_metrics,
     build_daily_type_metrics,
@@ -1669,7 +1676,15 @@ def main():
 
     st.markdown("---")
 
-    tab_summary, tab_top20, tab_daily, tab_company, tab_compare, tab_table = st.tabs(
+    (
+        tab_summary,
+        tab_top20,
+        tab_daily,
+        tab_company,
+        tab_compare,
+        tab_table,
+        tab_report,
+    ) = st.tabs(
         [
             "전체 수탁고",
             "TOP20 비교",
@@ -1677,6 +1692,7 @@ def main():
             "운용사별 수탁고",
             "운용사 비교",
             "상세 데이터",
+            "보고자료",
         ]
     )
 
@@ -2075,6 +2091,152 @@ def main():
                     use_container_width=True,
                 )
             render_detail_table(display)
+
+    # --- 보고자료 ---
+    with tab_report:
+        report_source = filter_aum(df, fund_types=list(FUND_TYPES), assets=assets)
+        report_dates = report_sorted_dates(report_source)
+        if len(report_dates) < 2:
+            st.warning(
+                "보고자료 작성을 위해 서로 다른 기준일 데이터가 2개 이상 필요합니다."
+            )
+        else:
+            st.subheader("주간 수탁고 변동")
+            st.caption(
+                "상단 **자산** 필터 적용 · "
+                f"자산 선택: {', '.join(assets) if assets else '없음'} · "
+                "비교일 기본값: 데이터 최신일 / 기준일 기본값: 비교일 7일 전 이하 가장 가까운 가용일"
+            )
+
+            date_labels = [d.strftime("%Y/%m/%d") for d in report_dates]
+            n_dates = len(report_dates)
+
+            col_cmp, col_base, _spacer = st.columns([1, 1, 4])
+
+            with col_cmp:
+                default_cmp_idx = n_dates - 1
+                if (
+                    st.session_state.get("report_compare_dates_signature")
+                    != tuple(report_dates)
+                ):
+                    st.session_state["report_compare_dates_signature"] = tuple(
+                        report_dates
+                    )
+                    st.session_state["report_compare_idx"] = default_cmp_idx
+                cmp_idx = st.selectbox(
+                    "비교일",
+                    range(n_dates),
+                    format_func=lambda i: date_labels[i],
+                    key="report_compare_idx",
+                )
+
+            selected_compare = report_dates[cmp_idx]
+            auto_base = report_default_base_date(report_dates, selected_compare)
+            auto_base_idx = report_dates.index(auto_base)
+
+            with col_base:
+                base_state_key = "report_base_idx"
+                last_cmp_key = "report_last_cmp_idx"
+                if st.session_state.get(last_cmp_key) != cmp_idx:
+                    st.session_state[last_cmp_key] = cmp_idx
+                    st.session_state[base_state_key] = auto_base_idx
+                if base_state_key not in st.session_state:
+                    st.session_state[base_state_key] = auto_base_idx
+                base_idx = st.selectbox(
+                    "기준일 (수정 가능)",
+                    range(n_dates),
+                    format_func=lambda i: date_labels[i],
+                    key=base_state_key,
+                )
+
+            base_date_r = report_dates[base_idx]
+            compare_date_r = report_dates[cmp_idx]
+
+            if base_date_r == compare_date_r:
+                st.info(
+                    "기준일과 비교일이 같습니다. 다른 날짜를 선택하면 증감이 표시됩니다."
+                )
+
+            day_gap = (compare_date_r - base_date_r).days
+            st.markdown(
+                f"**기준일** {base_date_r.strftime('%Y-%m-%d')}  →  "
+                f"**비교일** {compare_date_r.strftime('%Y-%m-%d')}  "
+                f"(간격: **{day_gap}일**)"
+            )
+
+            report_raw = build_weekly_aum_report(
+                report_source, base_date_r, compare_date_r
+            )
+            report_display = format_weekly_aum_report(report_raw)
+
+            display_table = report_display.set_index(["운용사", "구분"])
+
+            def _row_style(row: pd.Series) -> list[str]:
+                base = "text-align: center"
+                metric = row.name[1] if isinstance(row.name, tuple) else ""
+                if metric in ("증감", "증감률"):
+                    return [f"{base}; font-weight: 600"] * len(row)
+                return [base] * len(row)
+
+            def _signed_color(val: str) -> str:
+                if not isinstance(val, str):
+                    return ""
+                if val.startswith("+"):
+                    return "color: #ff6b6b; font-weight: 600"
+                if val.startswith("-") and val != "-":
+                    return "color: #4dabf7; font-weight: 600"
+                return ""
+
+            styler = (
+                display_table.style.set_table_styles(
+                    [
+                        {"selector": "th", "props": [("text-align", "center")]},
+                        {"selector": "td", "props": [("text-align", "center")]},
+                    ]
+                )
+                .apply(_row_style, axis=1)
+            )
+            value_cols = list(display_table.columns)
+            for col in value_cols:
+                styler = styler.map(_signed_color, subset=pd.IndexSlice[
+                    pd.IndexSlice[:, ["증감", "증감률"]], col
+                ])
+
+            st.dataframe(
+                styler,
+                use_container_width=True,
+                height=48 + len(display_table) * 34,
+            )
+
+            col_dl1, col_dl2, _ = st.columns([1, 1, 4])
+            with col_dl1:
+                csv_bytes = report_display.to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    "csv 저장",
+                    data=csv_bytes,
+                    file_name=(
+                        f"weekly_aum_report_"
+                        f"{base_date_r.strftime('%y%m%d')}_"
+                        f"{compare_date_r.strftime('%y%m%d')}.csv"
+                    ),
+                    mime="text/csv",
+                    key="report_weekly_csv",
+                    use_container_width=True,
+                )
+            with col_dl2:
+                tsv_text = to_excel_copy_text(report_display)
+                st.download_button(
+                    "tsv 저장 (엑셀 붙여넣기)",
+                    data=tsv_text.encode("utf-8-sig"),
+                    file_name=(
+                        f"weekly_aum_report_"
+                        f"{base_date_r.strftime('%y%m%d')}_"
+                        f"{compare_date_r.strftime('%y%m%d')}.tsv"
+                    ),
+                    mime="text/tab-separated-values",
+                    key="report_weekly_tsv",
+                    use_container_width=True,
+                )
 
     inject_toolbar_refresh_font()
 

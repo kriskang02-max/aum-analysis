@@ -24,9 +24,10 @@ from src.data_loader import (
 )
 from src.ceo_summary import build_company_ceo_summary, build_compare_ceo_summary
 from src.report_tables import (
-    build_weekly_aum_report,
+    build_weekly_aum_delta,
+    build_weekly_aum_snapshot,
     default_base_date as report_default_base_date,
-    format_weekly_aum_report,
+    format_aum_table,
     sorted_dates as report_sorted_dates,
     to_excel_copy_text,
 )
@@ -2164,19 +2165,14 @@ def main():
                 f"(간격: **{day_gap}일**)"
             )
 
-            report_raw = build_weekly_aum_report(
+            snapshot_raw = build_weekly_aum_snapshot(
+                report_source, compare_date_r
+            )
+            delta_raw = build_weekly_aum_delta(
                 report_source, base_date_r, compare_date_r
             )
-            report_display = format_weekly_aum_report(report_raw)
-
-            display_table = report_display.set_index(["운용사", "구분"])
-
-            def _row_style(row: pd.Series) -> list[str]:
-                base = "text-align: center"
-                metric = row.name[1] if isinstance(row.name, tuple) else ""
-                if metric in ("증감", "증감률"):
-                    return [f"{base}; font-weight: 600"] * len(row)
-                return [base] * len(row)
+            snapshot_display = format_aum_table(snapshot_raw, signed=False)
+            delta_display = format_aum_table(delta_raw, signed=True)
 
             def _signed_color(val: str) -> str:
                 if not isinstance(val, str):
@@ -2187,30 +2183,46 @@ def main():
                     return "color: #4dabf7; font-weight: 600"
                 return ""
 
-            styler = (
-                display_table.style.set_table_styles(
-                    [
-                        {"selector": "th", "props": [("text-align", "center")]},
-                        {"selector": "td", "props": [("text-align", "center")]},
-                    ]
-                )
-                .apply(_row_style, axis=1)
-            )
-            value_cols = list(display_table.columns)
-            for col in value_cols:
-                styler = styler.map(_signed_color, subset=pd.IndexSlice[
-                    pd.IndexSlice[:, ["증감", "증감률"]], col
-                ])
+            common_styles = [
+                {"selector": "th", "props": [("text-align", "center")]},
+                {"selector": "td", "props": [("text-align", "center")]},
+            ]
 
-            st.dataframe(
-                styler,
-                use_container_width=True,
-                height=48 + len(display_table) * 34,
+            col_snap, col_delta = st.columns(2)
+            with col_snap:
+                st.markdown(
+                    f"##### 수탁고 · {compare_date_r.strftime('%Y-%m-%d')} 기준"
+                )
+                snap_idx = snapshot_display.set_index("운용사")
+                snap_styler = snap_idx.style.set_table_styles(common_styles)
+                st.dataframe(
+                    snap_styler,
+                    use_container_width=True,
+                    height=48 + len(snap_idx) * 38,
+                )
+
+            with col_delta:
+                st.markdown(
+                    f"##### 변동 · {base_date_r.strftime('%y/%m/%d')} → "
+                    f"{compare_date_r.strftime('%y/%m/%d')}"
+                )
+                delta_idx = delta_display.set_index("운용사")
+                delta_styler = delta_idx.style.set_table_styles(common_styles)
+                for col in delta_idx.columns:
+                    delta_styler = delta_styler.map(_signed_color, subset=[col])
+                st.dataframe(
+                    delta_styler,
+                    use_container_width=True,
+                    height=48 + len(delta_idx) * 38,
+                )
+
+            combined_display = snapshot_display.merge(
+                delta_display, on="운용사", suffixes=(" 수탁고", " 변동")
             )
 
             col_dl1, col_dl2, _ = st.columns([1, 1, 4])
             with col_dl1:
-                csv_bytes = report_display.to_csv(index=False).encode("utf-8-sig")
+                csv_bytes = combined_display.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
                     "csv 저장",
                     data=csv_bytes,
@@ -2224,7 +2236,7 @@ def main():
                     use_container_width=True,
                 )
             with col_dl2:
-                tsv_text = to_excel_copy_text(report_display)
+                tsv_text = to_excel_copy_text(combined_display)
                 st.download_button(
                     "tsv 저장 (엑셀 붙여넣기)",
                     data=tsv_text.encode("utf-8-sig"),

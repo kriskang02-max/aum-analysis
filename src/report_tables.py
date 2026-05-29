@@ -140,8 +140,44 @@ def format_aum_table(report: pd.DataFrame, *, signed: bool = False) -> pd.DataFr
     return out
 
 
-def to_excel_copy_text(report_display: pd.DataFrame) -> str:
-    """엑셀 붙여넣기용 TSV 텍스트."""
-    if report_display.empty:
-        return ""
-    return report_display.to_csv(sep="\t", index=False)
+def _cell_value(df: pd.DataFrame, company: str, column: str) -> float:
+    row = df.loc[df["운용사"] == company, column]
+    if row.empty:
+        return 0.0
+    return float(row.iloc[0])
+
+
+def build_weekly_aum_summary_lines(
+    snapshot_raw: pd.DataFrame,
+    delta_raw: pd.DataFrame,
+) -> list[str]:
+    """보고용 한 줄 요약 (수탁고 1줄 + 변동 1줄 + 유형별 3줄)."""
+    rows = [
+        ("전체", "전체"),
+        ("신한자산운용", "신한"),
+        ("KB자산운용", "KB"),
+    ]
+
+    snap_line = ", ".join(
+        f"{short} 수탁고 {fmt_jo_eok(_cell_value(snapshot_raw, company, '전체'))}"
+        for company, short in rows
+    )
+
+    delta_line = ", ".join(
+        f"{short} {fmt_jo_eok(_cell_value(delta_raw, company, '전체'), signed=True)}"
+        for company, short in rows
+    )
+    delta_line = f"수탁고 변동 {delta_line}"
+
+    type_lines: list[str] = []
+    for col_label, _ in _DEFAULT_COL_SPECS[1:]:
+        parts = []
+        for company, short in rows:
+            snap = fmt_jo_eok(_cell_value(snapshot_raw, company, col_label))
+            delta = fmt_jo_eok(
+                _cell_value(delta_raw, company, col_label), signed=True
+            )
+            parts.append(f"{short} {snap} ({delta})")
+        type_lines.append(f"{col_label}: " + ", ".join(parts))
+
+    return [snap_line, delta_line, *type_lines]

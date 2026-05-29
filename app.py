@@ -26,10 +26,10 @@ from src.ceo_summary import build_company_ceo_summary, build_compare_ceo_summary
 from src.report_tables import (
     build_weekly_aum_delta,
     build_weekly_aum_snapshot,
+    build_weekly_aum_summary_lines,
     default_base_date as report_default_base_date,
     format_aum_table,
     sorted_dates as report_sorted_dates,
-    to_excel_copy_text,
 )
 from src.daily_compare import (
     build_daily_company_metrics,
@@ -2216,39 +2216,12 @@ def main():
                     height=48 + len(delta_idx) * 38,
                 )
 
-            combined_display = snapshot_display.merge(
-                delta_display, on="운용사", suffixes=(" 수탁고", " 변동")
+            summary_lines = build_weekly_aum_summary_lines(
+                snapshot_raw, delta_raw
             )
-
-            col_dl1, col_dl2, _ = st.columns([1, 1, 4])
-            with col_dl1:
-                csv_bytes = combined_display.to_csv(index=False).encode("utf-8-sig")
-                st.download_button(
-                    "csv 저장",
-                    data=csv_bytes,
-                    file_name=(
-                        f"weekly_aum_report_"
-                        f"{base_date_r.strftime('%y%m%d')}_"
-                        f"{compare_date_r.strftime('%y%m%d')}.csv"
-                    ),
-                    mime="text/csv",
-                    key="report_weekly_csv",
-                    use_container_width=True,
-                )
-            with col_dl2:
-                tsv_text = to_excel_copy_text(combined_display)
-                st.download_button(
-                    "tsv 저장 (엑셀 붙여넣기)",
-                    data=tsv_text.encode("utf-8-sig"),
-                    file_name=(
-                        f"weekly_aum_report_"
-                        f"{base_date_r.strftime('%y%m%d')}_"
-                        f"{compare_date_r.strftime('%y%m%d')}.tsv"
-                    ),
-                    mime="text/tab-separated-values",
-                    key="report_weekly_tsv",
-                    use_container_width=True,
-                )
+            st.markdown("---")
+            st.caption("보고용 요약 (복사용)")
+            st.text("\n".join(summary_lines))
 
     inject_toolbar_refresh_font()
 

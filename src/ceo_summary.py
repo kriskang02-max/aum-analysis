@@ -110,7 +110,8 @@ def _compare_type_line(
             f"격차 **{fmt_jo_eok(gap, signed=True)}** (A−B) · "
             f"기간 변화 **{fmt_jo_eok(gap_chg, signed=True)}**"
         )
-    return f"{label}: {aum} · {gap_txt}"
+    # 운용사 비교 화면(두 운용사)용 기존 포맷 유지
+    return f"**{label}** · {aum} · {gap_txt}"
 
 
 def _company_total_at(
@@ -159,7 +160,7 @@ def build_company_ceo_summary(
     compare_date: pd.Timestamp,
     types: list[str],
 ) -> str:
-    """단일 운용사 — 유형별 증감 3줄(증감액·증감률)."""
+    """단일 운용사 — 분석요약 4줄(전체/공모/사모/일임)."""
     if _norm(base_date) == _norm(compare_date):
         return (
             f"{_SUMMARY_TITLE}\n\n"
@@ -167,18 +168,45 @@ def build_company_ceo_summary(
             "비교일을 변경해 주세요."
         )
 
-    lines: list[str] = []
+    # 전체(공모+사모+일임) 합계: 증감액·증감률을 합산해서 표시
+    total_base = 0.0
+    total_compare = 0.0
+    found_any = False
     for t in TYPE_ORDER:
-        if t not in types:
+        part = sub[sub["유형"] == t]
+        if part.empty:
             continue
+        base_v = _aum(part, base_date)
+        compare_v = _aum(part, compare_date)
+        if base_v is None or compare_v is None:
+            continue
+        total_base += base_v
+        total_compare += compare_v
+        found_any = True
+
+    lines: list[str] = []
+    if not found_any:
+        lines.append("전체: 데이터 없음")
+    else:
+        total_delta = total_compare - total_base
+        total_rate = (total_delta / total_base * 100) if total_base else None
+        amt = fmt_jo_eok(total_delta, signed=True)
+        lines.append(f"전체: **{amt}**{_signed_pct(total_rate)}")
+
+    # 유형별 3줄
+    for t in TYPE_ORDER:
         tp = _type_period(sub, t, base_date, compare_date)
         if tp is None:
-            lines.append(f"**{TYPE_LABELS[t]}** · 데이터 없음")
+            lines.append(f"{TYPE_LABELS[t]}: 데이터 없음")
             continue
         if tp.compare is None:
-            lines.append(f"**{tp.label}** · 비교일 수치 미확보")
+            lines.append(f"{tp.label}: 비교일 수치 미확보")
             continue
-        lines.append(_company_delta_line(tp))
+        if tp.delta is None:
+            lines.append(f"{tp.label}: 증감 산출 불가")
+            continue
+        amt = fmt_jo_eok(tp.delta, signed=True)
+        lines.append(f"{tp.label}: **{amt}**{_signed_pct(tp.delta_pct)}")
 
     body = "\n\n".join(lines) if lines else "표시 가능한 유형 데이터가 없습니다."
     return f"{_SUMMARY_TITLE}\n\n{body}"
@@ -205,27 +233,25 @@ def build_compare_ceo_summary(
     sub_a = agg[agg["운용사"] == company_a]
     sub_b = agg[agg["운용사"] == company_b]
 
-    lines: list[str] = [
-        _compare_total_line(company_a, company_b, sub_a, sub_b, base_date, compare_date)
-    ]
+    lines: list[str] = []
     for t in TYPE_ORDER:
         if t not in types:
             continue
         pa, pb = sub_a[sub_a["유형"] == t], sub_b[sub_b["유형"] == t]
         if pa.empty and pb.empty:
-            lines.append(f"{TYPE_LABELS[t]}: 양사 데이터 없음")
+            lines.append(f"**{TYPE_LABELS[t]}** · 양사 데이터 없음")
             continue
 
         ta, tb = _type_period(pa, t, base_date, compare_date), _type_period(
             pb, t, base_date, compare_date
         )
         if ta is None or tb is None:
-            lines.append(f"{TYPE_LABELS[t]}: 비교 가능 수치 부족")
+            lines.append(f"**{TYPE_LABELS[t]}** · 비교 가능 수치 부족")
             continue
 
         ca, cb = ta.compare, tb.compare
         if ca is None or cb is None:
-            lines.append(f"{ta.label}: 비교일 수치 미확보")
+            lines.append(f"**{ta.label}** · 비교일 수치 미확보")
             continue
 
         gap = ca - cb
@@ -240,5 +266,5 @@ def build_compare_ceo_summary(
             )
         )
 
-    body = "\n".join(lines) if lines else "비교 가능 유형이 없습니다."
+    body = "\n\n".join(lines) if lines else "비교 가능 유형이 없습니다."
     return f"{_SUMMARY_TITLE}\n\n{body}"

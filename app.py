@@ -1681,6 +1681,7 @@ def main():
         tab_summary,
         tab_top20,
         tab_daily,
+        tab_weekly,
         tab_company,
         tab_compare,
         tab_table,
@@ -1690,6 +1691,7 @@ def main():
             "전체 수탁고",
             "TOP20 비교",
             "Daily 비교",
+            "Weekly 비교",
             "운용사별 수탁고",
             "운용사 비교",
             "상세 데이터",
@@ -1933,6 +1935,113 @@ def main():
                 hide_index=True,
                 height=min(table_height, 900),
                 key=f"daily_table_{_norm_date(prev_date)}_{_norm_date(latest_date)}",
+            )
+
+    # --- Weekly 비교 ---
+    with tab_weekly:
+        dates = sorted_dates(agg)
+        if len(dates) < 2:
+            st.warning(
+                "주간 비교를 위해 서로 다른 기준일 데이터가 2개 이상 필요합니다. "
+                f"(현재 {len(dates)}개 일자)"
+            )
+        else:
+            latest_date = dates[-1]
+            prev_date = report_default_base_date(dates, latest_date)
+
+            weekly_metrics = build_daily_company_metrics(agg, prev_date, latest_date)
+            type_weekly = build_daily_type_metrics(agg, prev_date, latest_date)
+            counts_w = daily_summary_counts(weekly_metrics)
+
+            total_prev_w = weekly_metrics["직전_수탁고"].sum()
+            total_latest_w = weekly_metrics["최신_수탁고"].sum()
+            total_delta_w = total_latest_w - total_prev_w
+            total_rate_w = (total_delta_w / total_prev_w * 100) if total_prev_w else 0
+
+            st.caption(
+                f"**Weekly 비교** · 최신일 {_yy_mm_dd(latest_date)} 기준 "
+                f"**{_yy_mm_dd(prev_date)} → {_yy_mm_dd(latest_date)}** (약 7일 전 대비) · "
+                "상단 유형·자산 필터 적용 · 정렬은 **변동폭(절대값)** 기준"
+            )
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric(f"{_yy_mm_dd(latest_date)} 합계", fmt_jo_eok(total_latest_w))
+            k2.metric("주간 증감", fmt_jo_eok(total_delta_w, signed=True))
+            k3.metric("증감률", f"{total_rate_w:+.2f}%" if total_prev_w else "-")
+            k4.metric("증가 / 감소", f"{counts_w['up']} / {counts_w['down']}")
+            k5.metric("변동 없음", f"{counts_w['flat']}개사")
+
+            st.plotly_chart(
+                build_daily_type_delta_chart(type_weekly, prev_date, latest_date),
+                use_container_width=True,
+                key=f"weekly_type_{st.session_state.chart_nonce}_{_norm_date(latest_date)}",
+            )
+
+            changed_w = weekly_metrics[~weekly_metrics["변동없음"]]
+
+            st.subheader("전체 · 주간 증가/감소 상위")
+            _render_daily_up_down_charts(
+                weekly_metrics,
+                top_n=12,
+                key_prefix="weekly_all",
+                up_chart_title="증가 TOP (주간·전체)",
+                down_chart_title="감소 TOP (주간·전체)",
+            )
+
+            st.subheader("유형별 · 주간 증가/감소 상위")
+            for fund_type in ("공모", "사모", "일임"):
+                type_agg = agg[agg["유형"] == fund_type]
+                if type_agg.empty:
+                    continue
+                type_label = TYPE_LABELS[fund_type]
+                type_metrics_w = build_daily_company_metrics(
+                    type_agg, prev_date, latest_date
+                )
+                type_counts_w = daily_summary_counts(type_metrics_w)
+                st.markdown(
+                    f"**{type_label}** · 증가 {type_counts_w['up']} / "
+                    f"감소 {type_counts_w['down']} / 무변동 {type_counts_w['flat']}"
+                )
+                _render_daily_up_down_charts(
+                    type_metrics_w,
+                    top_n=10,
+                    key_prefix=f"weekly_{fund_type}",
+                    up_chart_title=f"증가 TOP · {type_label} (주간)",
+                    down_chart_title=f"감소 TOP · {type_label} (주간)",
+                    up_label=f"{type_label} 증가 상위",
+                    down_label=f"{type_label} 감소 상위",
+                )
+
+            st.subheader("주간 변동폭 상위 (전체)")
+            st.plotly_chart(
+                build_daily_movers_chart(
+                    weekly_metrics,
+                    title=f"주간 변동폭 TOP · {_yy_mm_dd(prev_date)}→{_yy_mm_dd(latest_date)}",
+                    top_n=20,
+                    only_changed=True,
+                ),
+                use_container_width=True,
+                key=f"weekly_abs_{st.session_state.chart_nonce}",
+            )
+
+            show_flat_w = st.checkbox(
+                "변동 없는 운용사 표에 포함 (주간)",
+                value=True,
+                key="weekly_show_flat",
+            )
+            table_src_w = weekly_metrics if show_flat_w else changed_w
+            st.subheader("운용사별 주간 비교")
+            st.caption(
+                f"**{DEFAULT_COMPANY}** 행 강조 · 변동 없음은 회색 이탤릭"
+            )
+            weekly_table = format_daily_table(table_src_w, prev_date, latest_date)
+            table_height_w = 48 + len(weekly_table) * 34
+            st.dataframe(
+                style_daily_table(weekly_table),
+                use_container_width=True,
+                hide_index=True,
+                height=min(table_height_w, 900),
+                key=f"weekly_table_{_norm_date(prev_date)}_{_norm_date(latest_date)}",
             )
 
     # --- 운용사별 수탁고 ---

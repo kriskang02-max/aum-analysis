@@ -27,7 +27,13 @@ npm run preview
 - **localStorage** 영구 저장 (`daily_logs`, `weekly_metrics`, `routine_presets`, `thought_archive`)
 - JSON 백업/복원, 요일별 루틴 설정
 
-## 스택
+## iPad / 모바일에서 보기
+
+GitHub Pages 배포 후 아이패드 Safari에서 접속:
+
+**https://kriskang02-max.github.io/aum-analysis/**
+
+(저장소 Settings → Pages에서 Source를 **GitHub Actions**로 설정해야 최초 1회 활성화됩니다.)
 
 - React 19 + Vite
 - Tailwind CSS v4
